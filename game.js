@@ -46,6 +46,7 @@ const images = {
 
 let board;
 let pac;
+let pacSpawn;
 let ghosts;
 let score;
 let lives;
@@ -53,6 +54,13 @@ let poweredUntil;
 let dotsLeft;
 let nextDir;
 let gameOver;
+let lastFrameTime;
+let pacMoveAccumulator;
+let ghostMoveAccumulator;
+
+const PAC_MOVE_MS = 150;
+const GHOST_MOVE_MS = 235;
+const GHOST_FRIGHTENED_MOVE_MS = 320;
 
 function loadImage(src) {
   const img = new Image();
@@ -64,12 +72,16 @@ function resetGame() {
   board = MAP.map((row) => row.split(""));
   ghosts = [];
   pac = { x: 1, y: 1, dir: { x: 0, y: 0 } };
+  pacSpawn = { x: 1, y: 1 };
   score = 0;
   lives = 3;
   poweredUntil = 0;
   dotsLeft = 0;
   nextDir = { x: 0, y: 0 };
   gameOver = false;
+  lastFrameTime = 0;
+  pacMoveAccumulator = 0;
+  ghostMoveAccumulator = 0;
 
   for (let y = 0; y < ROWS; y++) {
     for (let x = 0; x < COLS; x++) {
@@ -77,6 +89,7 @@ function resetGame() {
       if (cell === "P") {
         pac.x = x;
         pac.y = y;
+        pacSpawn = { x, y };
         board[y][x] = ".";
       }
       if (cell === "G") {
@@ -137,53 +150,59 @@ function stepEntity(entity, preferredDir) {
 }
 
 function update() {
-  if (gameOver) {
+  const now = performance.now();
+  if (gameOver || !lastFrameTime) {
+    lastFrameTime = now;
     return;
   }
 
-  if (nextDir.x !== 0 || nextDir.y !== 0) {
-    stepEntity(pac, nextDir);
-  }
-  stepEntity(pac, pac.dir);
+  const delta = Math.min(100, now - lastFrameTime);
+  lastFrameTime = now;
+  pacMoveAccumulator += delta;
+  ghostMoveAccumulator += delta;
 
-  const tile = board[pac.y][pac.x];
-  if (tile === ".") {
-    board[pac.y][pac.x] = " ";
-    score += 10;
-    dotsLeft -= 1;
-  } else if (tile === "o") {
-    board[pac.y][pac.x] = " ";
-    score += 50;
-    dotsLeft -= 1;
-    poweredUntil = performance.now() + 7000;
-  }
+  while (pacMoveAccumulator >= PAC_MOVE_MS && !gameOver) {
+    pacMoveAccumulator -= PAC_MOVE_MS;
 
-  for (const ghost of ghosts) {
-    const choices = [ghost.dir, randomDir(), randomDir(), randomDir()];
-    let moved = false;
-    for (const dir of choices) {
-      if (stepEntity(ghost, dir)) {
-        moved = true;
-        break;
+    if (nextDir.x !== 0 || nextDir.y !== 0) {
+      const turned = stepEntity(pac, nextDir);
+      if (turned) {
+        nextDir = { ...pac.dir };
+      } else {
+        stepEntity(pac, pac.dir);
+      }
+    } else {
+      stepEntity(pac, pac.dir);
+    }
+
+    eatTileAtPacPosition();
+    for (const ghost of ghosts) {
+      if (ghost.x === pac.x && ghost.y === pac.y) {
+        if (!handleGhostCollision(ghost, now)) {
+          return;
+        }
       }
     }
-    if (!moved) {
-      ghost.dir = randomDir();
-    }
+  }
 
-    if (ghost.x === pac.x && ghost.y === pac.y) {
-      if (performance.now() < poweredUntil) {
-        score += 200;
-        ghost.x = ghost.spawnX;
-        ghost.y = ghost.spawnY;
-      } else {
-        lives -= 1;
-        pac.x = 1;
-        pac.y = 1;
-        pac.dir = { x: 0, y: 0 };
-        if (lives <= 0) {
-          gameOver = true;
-          updateHud("Game Over (press R)");
+  const ghostStepMs = now < poweredUntil ? GHOST_FRIGHTENED_MOVE_MS : GHOST_MOVE_MS;
+  while (ghostMoveAccumulator >= ghostStepMs && !gameOver) {
+    ghostMoveAccumulator -= ghostStepMs;
+    for (const ghost of ghosts) {
+      const choices = [ghost.dir, randomDir(), randomDir(), randomDir()];
+      let moved = false;
+      for (const dir of choices) {
+        if (stepEntity(ghost, dir)) {
+          moved = true;
+          break;
+        }
+      }
+      if (!moved) {
+        ghost.dir = randomDir();
+      }
+
+      if (ghost.x === pac.x && ghost.y === pac.y) {
+        if (!handleGhostCollision(ghost, now)) {
           return;
         }
       }
@@ -197,6 +216,43 @@ function update() {
   }
 
   updateHud(performance.now() < poweredUntil ? "Powered Up" : "Running");
+}
+
+function eatTileAtPacPosition() {
+  const tile = board[pac.y][pac.x];
+  if (tile === ".") {
+    board[pac.y][pac.x] = " ";
+    score += 10;
+    dotsLeft -= 1;
+  } else if (tile === "o") {
+    board[pac.y][pac.x] = " ";
+    score += 50;
+    dotsLeft -= 1;
+    poweredUntil = performance.now() + 7000;
+  }
+}
+
+function handleGhostCollision(ghost, now) {
+  if (now < poweredUntil) {
+    score += 200;
+    ghost.x = ghost.spawnX;
+    ghost.y = ghost.spawnY;
+    return true;
+  }
+
+  lives -= 1;
+  pac.x = pacSpawn.x;
+  pac.y = pacSpawn.y;
+  pac.dir = { x: 0, y: 0 };
+  nextDir = { x: 0, y: 0 };
+
+  if (lives <= 0) {
+    gameOver = true;
+    updateHud("Game Over (press R)");
+    return false;
+  }
+
+  return true;
 }
 
 function drawSpriteOrFallback(img, x, y, fallbackColor) {
